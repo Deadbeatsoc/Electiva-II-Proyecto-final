@@ -20,6 +20,12 @@ export interface MediaItem {
   status: 'completed' | 'ongoing' | 'upcoming';
   episodes?: number;
   chapters?: number;
+  cast?: {
+    name: string;
+    character?: string;
+    role?: string;
+    image_url?: string;
+  }[];
   created_at: string;
 }
 
@@ -42,8 +48,10 @@ export interface ForumPost {
   title: string;
   content: string;
   media_id?: string;
-  likes_count: number;
-  comments_count: number;
+  category: 'movies' | 'series' | 'anime' | 'manga' | 'general';
+  tags?: string[];
+  liked_by: string[];
+  comments: Comment[];
   created_at: string;
   updated_at: string;
   user?: User;
@@ -56,6 +64,7 @@ export interface Comment {
   user_id: string;
   content: string;
   likes_count: number;
+  liked_by?: string[];
   parent_id?: string;
   created_at: string;
   user?: User;
