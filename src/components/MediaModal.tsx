@@ -1,9 +1,22 @@
-import React, { useState } from 'react';
-import { X, Calendar, Play, Clock, Star, Plus, Check } from 'lucide-react';
-import { MediaItem } from '../types';
+import React, { useEffect, useState } from 'react';
+import {
+  X,
+  Calendar,
+  Play,
+  Clock,
+  Star,
+  Plus,
+  Check,
+  Book,
+  Eye,
+  EyeOff,
+  Trash2,
+} from 'lucide-react';
+import { MediaItem, UserMediaList } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import StarRating from './StarRating';
 import AuthModal from './AuthModal';
+import { useData } from '../context/DataContext';
 
 interface MediaModalProps {
   media: MediaItem;
@@ -13,12 +26,34 @@ interface MediaModalProps {
 const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
   const { user } = useAuth();
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [userRating, setUserRating] = useState(0);
-  const [listStatus, setListStatus] = useState<string>('');
-  const [progress, setProgress] = useState(0);
-  const [isInList, setIsInList] = useState(false);
+  const {
+    addUserMediaEntry,
+    getUserMediaEntry,
+    updateUserMediaEntry,
+    removeUserMediaEntry,
+    setUserRatingForMedia,
+    getUserRatingForMedia,
+  } = useData();
 
-  const statusOptions = [
+  const entry = user ? getUserMediaEntry(user.id, media.id) : undefined;
+  const ratingFromContext = user ? getUserRatingForMedia(user.id, media.id) : 0;
+
+  const [userRating, setUserRating] = useState(ratingFromContext);
+  const [listStatus, setListStatus] = useState<string>(entry?.status || '');
+  const [progress, setProgress] = useState(entry?.progress || 0);
+  const [isPublic, setIsPublic] = useState(entry?.is_public ?? true);
+
+  useEffect(() => {
+    setListStatus(entry?.status || '');
+    setProgress(entry?.progress || 0);
+    setIsPublic(entry?.is_public ?? true);
+  }, [entry?.status, entry?.progress, entry?.is_public]);
+
+  useEffect(() => {
+    setUserRating(ratingFromContext);
+  }, [ratingFromContext]);
+
+  const statusOptions: { value: UserMediaList['status']; label: string }[] = [
     { value: 'plan_to_watch', label: 'Plan to Watch' },
     { value: 'watching', label: 'Watching' },
     { value: 'completed', label: 'Completed' },
@@ -26,30 +61,96 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
     { value: 'dropped', label: 'Dropped' },
   ];
 
-  const handleAddToList = () => {
+  const ensureAuth = () => {
     if (!user) {
       setShowAuthModal(true);
-      return;
+      return false;
     }
-    // Here you would normally add to database
-    setIsInList(true);
+    return true;
+  };
+
+  const handleAddToList = () => {
+    if (!ensureAuth()) return;
+    addUserMediaEntry(user!.id, media.id, {
+      status: 'plan_to_watch',
+      progress: 0,
+      is_public: true,
+    });
+    setListStatus('plan_to_watch');
+    setProgress(0);
+    setIsPublic(true);
+  };
+
+  const handleStatusChange = (status: UserMediaList['status']) => {
+    if (!ensureAuth()) return;
+    setListStatus(status);
+    updateUserMediaEntry(user!.id, media.id, { status });
+  };
+
+  const handleProgressChange = (value: number) => {
+    if (!ensureAuth()) return;
+    const normalized = Number.isNaN(value) ? 0 : Math.max(0, value);
+    setProgress(normalized);
+    updateUserMediaEntry(user!.id, media.id, { progress: normalized });
+  };
+
+  const handleVisibilityToggle = () => {
+    if (!ensureAuth() || !entry) return;
+    const nextVisibility = !isPublic;
+    setIsPublic(nextVisibility);
+    updateUserMediaEntry(user!.id, media.id, { is_public: nextVisibility });
+  };
+
+  const handleRemoveFromList = () => {
+    if (!ensureAuth() || !entry) return;
+    removeUserMediaEntry(user!.id, media.id);
   };
 
   const handleRating = (rating: number) => {
-    if (!user) {
-      setShowAuthModal(true);
-      return;
-    }
+    if (!ensureAuth()) return;
     setUserRating(rating);
-    // Here you would normally save to database
+    setUserRatingForMedia(user!.id, media.id, rating);
   };
 
   const getProgressLabel = () => {
     if (media.type === 'manga') {
       return `Capítulo ${progress} de ${media.chapters || '?'}`;
-    } else {
+    }
+    if (media.type === 'anime' || media.type === 'series') {
       return `Episodio ${progress} de ${media.episodes || '?'}`;
     }
+    return `Veces visto: ${progress}`;
+  };
+
+  const renderTypeSpecific = () => {
+    if (media.type === 'anime') {
+      return (
+        <div className="flex items-center text-gray-600 text-sm">
+          <Play size={16} className="mr-2 text-red-500" />
+          {media.episodes ? `${media.episodes} episodios` : 'Anime'}
+        </div>
+      );
+    }
+
+    if (media.type === 'series') {
+      return (
+        <div className="flex items-center text-gray-600 text-sm">
+          <Clock size={16} className="mr-2 text-blue-500" />
+          {media.episodes ? `${media.episodes} episodios` : 'Serie'}
+        </div>
+      );
+    }
+
+    if (media.type === 'manga') {
+      return (
+        <div className="flex items-center text-gray-600 text-sm">
+          <Book size={16} className="mr-2 text-green-500" />
+          {media.chapters ? `${media.chapters} capítulos` : 'Manga'}
+        </div>
+      );
+    }
+
+    return null;
   };
 
   return (
@@ -73,8 +174,8 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
             <div className="absolute bottom-4 left-4 text-white">
               <h1 className="text-3xl font-bold mb-2">{media.title}</h1>
               <div className="flex items-center space-x-4 text-sm">
-                <span className="bg-white bg-opacity-20 px-3 py-1 rounded-full">
-                  {media.type.charAt(0).toUpperCase() + media.type.slice(1)}
+                <span className="bg-white bg-opacity-20 px-3 py-1 rounded-full capitalize">
+                  {media.type}
                 </span>
                 <div className="flex items-center">
                   <Calendar size={16} className="mr-1" />
@@ -93,8 +194,9 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
             <div className="grid md:grid-cols-3 gap-8">
               {/* Main Content */}
               <div className="md:col-span-2">
-                <div className="mb-6">
-                  <h2 className="text-xl font-semibold mb-3">Sinopsis</h2>
+                <div className="mb-6 space-y-3">
+                  {renderTypeSpecific()}
+                  <h2 className="text-xl font-semibold">Sinopsis</h2>
                   <p className="text-gray-700 leading-relaxed">{media.description}</p>
                 </div>
 
@@ -139,16 +241,42 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
                     </div>
                   </div>
                 </div>
+
+                {media.cast && media.cast.length > 0 && (
+                  <div className="mb-6">
+                    <h3 className="text-lg font-semibold mb-3">Reparto destacado</h3>
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      {media.cast.map((member, index) => (
+                        <div
+                          key={`${member.name}-${index}`}
+                          className="flex items-start space-x-3 p-3 bg-gray-50 rounded-lg"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 text-white flex items-center justify-center font-semibold">
+                            {member.name.charAt(0)}
+                          </div>
+                          <div>
+                            <p className="font-medium text-gray-900">{member.name}</p>
+                            {member.character && (
+                              <p className="text-sm text-gray-600">Como {member.character}</p>
+                            )}
+                            {member.role && (
+                              <p className="text-sm text-gray-500">{member.role}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Sidebar - User Actions */}
               <div className="space-y-6">
-                {/* Add to List */}
                 <div className="bg-gray-50 rounded-lg p-4">
                   <h3 className="font-semibold mb-3">Mi Lista</h3>
                   {user ? (
                     <div className="space-y-3">
-                      {!isInList ? (
+                      {!entry ? (
                         <button
                           onClick={handleAddToList}
                           className="w-full flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -162,14 +290,14 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
                             <Check size={16} className="mr-2" />
                             En tu lista
                           </div>
-                          
+
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">
                               Estado
                             </label>
                             <select
                               value={listStatus}
-                              onChange={(e) => setListStatus(e.target.value)}
+                              onChange={(e) => handleStatusChange(e.target.value as UserMediaList['status'])}
                               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                             >
                               <option value="">Seleccionar estado</option>
@@ -181,17 +309,17 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
                             </select>
                           </div>
 
-                          {(media.episodes || media.chapters) && (
+                          {(media.episodes || media.chapters || media.type === 'movie') && (
                             <div>
                               <label className="block text-sm font-medium text-gray-700 mb-1">
                                 Progreso
                               </label>
                               <input
                                 type="number"
-                                min="0"
+                                min={0}
                                 max={media.episodes || media.chapters}
                                 value={progress}
-                                onChange={(e) => setProgress(parseInt(e.target.value))}
+                                onChange={(e) => handleProgressChange(parseInt(e.target.value, 10))}
                                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                               />
                               <p className="text-xs text-gray-500 mt-1">
@@ -199,6 +327,31 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
                               </p>
                             </div>
                           )}
+
+                          <div className="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                            <span className="text-gray-600">Visibilidad</span>
+                            <button
+                              type="button"
+                              onClick={handleVisibilityToggle}
+                              className={`inline-flex items-center px-3 py-1 rounded-md border transition-colors ${
+                                isPublic
+                                  ? 'border-green-200 bg-green-100 text-green-700 hover:bg-green-200'
+                                  : 'border-gray-300 bg-gray-100 text-gray-600 hover:bg-gray-200'
+                              }`}
+                            >
+                              {isPublic ? <Eye size={16} className="mr-1" /> : <EyeOff size={16} className="mr-1" />}
+                              {isPublic ? 'Pública' : 'Privada'}
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={handleRemoveFromList}
+                            className="w-full inline-flex items-center justify-center px-3 py-2 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
+                          >
+                            <Trash2 size={16} className="mr-2" />
+                            Quitar de mi lista
+                          </button>
                         </div>
                       )}
                     </div>
@@ -212,7 +365,6 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
                   )}
                 </div>
 
-                {/* Rating */}
                 <div className="bg-gray-50 rounded-lg p-4">
                   <h3 className="font-semibold mb-3">Tu Puntuación</h3>
                   {user ? (
