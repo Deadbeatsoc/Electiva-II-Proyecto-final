@@ -55,6 +55,49 @@ const DataContext = createContext<DataContextValue | undefined>(undefined);
 
 const STORAGE_KEY = 'media-forum-data-v1';
 
+const API_BASE_URL = (() => {
+  const raw = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+})();
+
+const buildApiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+
+async function callApi<T = unknown>(path: string, options: RequestInit = {}): Promise<T | null> {
+  try {
+    const response = await fetch(buildApiUrl(path), {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.warn(`API request failed (${response.status}): ${errorText}`);
+      return null;
+    }
+
+    if (response.status === 204) {
+      return null;
+    }
+
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      return (await response.json()) as T;
+    }
+
+    return null;
+  } catch (error) {
+    console.warn('API request error', error);
+    return null;
+  }
+}
+
+const fireAndForget = (path: string, options: RequestInit = {}) => {
+  void callApi(path, options);
+};
+
 const generateId = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -408,6 +451,26 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
   }, [state]);
 
   useEffect(() => {
+    let ignore = false;
+
+    const loadForumPosts = async () => {
+      const posts = await callApi<ForumPost[]>('/forum/posts', { method: 'GET' });
+      if (!ignore && posts) {
+        setState(prev => ({
+          ...prev,
+          forumPosts: posts.length ? posts : prev.forumPosts,
+        }));
+      }
+    };
+
+    loadForumPosts();
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  useEffect(() => {
     persistState(state, lastUserIdRef.current);
   }, [state]);
 
@@ -428,6 +491,33 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
     setState(nextState);
 
     lastUserIdRef.current = nextUserId;
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+
+    let ignore = false;
+
+    const loadUserList = async () => {
+      const entries = await callApi<UserMediaList[]>(`/users/${currentUserId}/list`, { method: 'GET' });
+      if (!ignore && entries) {
+        setState(prev => ({
+          ...prev,
+          userLists: {
+            ...prev.userLists,
+            [currentUserId]: entries,
+          },
+        }));
+      }
+    };
+
+    loadUserList();
+
+    return () => {
+      ignore = true;
+    };
   }, [currentUserId]);
 
   const addMediaItem = (input: MediaInput): MediaItem => {
@@ -470,6 +560,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
   };
 
   const addUserMediaEntry = (userId: string, mediaId: string, data?: Partial<UserMediaList>) => {
+    let createdEntry: UserMediaList | null = null;
+
     setState(prev => {
       const existing = prev.userLists[userId] || [];
       if (existing.some(entry => entry.media_id === mediaId)) {
@@ -489,6 +581,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
         updated_at: new Date().toISOString(),
       };
 
+      createdEntry = newEntry;
+
       return {
         ...prev,
         userLists: {
@@ -497,40 +591,73 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
         },
       };
     });
+
+    if (createdEntry) {
+      fireAndForget(`/users/${userId}/list`, {
+        method: 'POST',
+        body: JSON.stringify(createdEntry),
+      });
+    }
   };
 
   const updateUserMediaEntry = (userId: string, mediaId: string, updates: Partial<UserMediaList>) => {
+    let updatedEntry: UserMediaList | null = null;
+
     setState(prev => {
       const existing = prev.userLists[userId] || [];
+      const nextList = existing.map(entry => {
+        if (entry.media_id !== mediaId) {
+          return entry;
+        }
+
+        const merged: UserMediaList = {
+          ...entry,
+          ...updates,
+          updated_at: new Date().toISOString(),
+        };
+        updatedEntry = merged;
+        return merged;
+      });
+
       return {
         ...prev,
         userLists: {
           ...prev.userLists,
-          [userId]: existing.map(entry =>
-            entry.media_id === mediaId
-              ? {
-                  ...entry,
-                  ...updates,
-                  updated_at: new Date().toISOString(),
-                }
-              : entry,
-          ),
+          [userId]: nextList,
         },
       };
     });
+
+    if (updatedEntry) {
+      fireAndForget(`/users/${userId}/list/${mediaId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatedEntry),
+      });
+    }
   };
 
   const removeUserMediaEntry = (userId: string, mediaId: string) => {
+    let removed = false;
+
     setState(prev => {
       const existing = prev.userLists[userId] || [];
+      const filtered = existing.filter(entry => entry.media_id !== mediaId);
+      removed = filtered.length !== existing.length;
+
       return {
         ...prev,
         userLists: {
           ...prev.userLists,
-          [userId]: existing.filter(entry => entry.media_id !== mediaId),
+          [userId]: filtered,
         },
       };
     });
+
+    if (removed) {
+      fireAndForget(`/users/${userId}/list/${mediaId}`, {
+        method: 'DELETE',
+      });
+    }
   };
 
   const recalculateMediaRating = (mediaId: string, ratings: Rating[]) => {
@@ -549,6 +676,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
   };
 
   const setUserRatingForMedia = (userId: string, mediaId: string, ratingValue: number) => {
+    let ratingEntry: UserMediaList | null = null;
+
     setState(prev => {
       let updatedRatings = [...prev.ratings];
       const existingIndex = updatedRatings.findIndex(rating => rating.user_id === userId && rating.media_id === mediaId);
@@ -574,15 +703,20 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
 
       const updatedUserLists = {
         ...prev.userLists,
-        [userId]: (prev.userLists[userId] || []).map(entry =>
-          entry.media_id === mediaId
-            ? {
-                ...entry,
-                rating: ratingValue,
-                updated_at: new Date().toISOString(),
-              }
-            : entry,
-        ),
+        [userId]: (prev.userLists[userId] || []).map(entry => {
+          if (entry.media_id !== mediaId) {
+            return entry;
+          }
+
+          const merged: UserMediaList = {
+            ...entry,
+            rating: ratingValue,
+            updated_at: new Date().toISOString(),
+          };
+
+          ratingEntry = merged;
+          return merged;
+        }),
       };
 
       return {
@@ -594,6 +728,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
         userLists: updatedUserLists,
       };
     });
+
+    if (ratingEntry) {
+      fireAndForget(`/users/${userId}/list/${mediaId}`, {
+        method: 'PUT',
+        body: JSON.stringify(ratingEntry),
+      });
+    }
   };
 
   const getUserRatingForMedia = (userId: string, mediaId: string) => {
@@ -631,21 +772,34 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
       forumPosts: [newPost, ...prev.forumPosts],
     }));
 
+    fireAndForget('/forum/posts', {
+      method: 'POST',
+      body: JSON.stringify(newPost),
+    });
+
     return newPost;
   };
 
   const togglePostLike = (postId: string, userId: string) => {
+    let liked = false;
+
     setState(prev => ({
       ...prev,
       forumPosts: prev.forumPosts.map(post => {
         if (post.id !== postId) return post;
         const hasLiked = post.liked_by.includes(userId);
+        liked = !hasLiked;
         return {
           ...post,
           liked_by: hasLiked ? post.liked_by.filter(id => id !== userId) : [...post.liked_by, userId],
         };
       }),
     }));
+
+    fireAndForget(`/forum/posts/${postId}/likes`, {
+      method: 'POST',
+      body: JSON.stringify({ userId, liked }),
+    });
   };
 
   const addPostComment = (postId: string, user: User, content: string) => {
@@ -679,9 +833,16 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
           : post,
       ),
     }));
+
+    fireAndForget(`/forum/posts/${postId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(newComment),
+    });
   };
 
   const addReplyToComment = (postId: string, commentId: string, user: User, content: string) => {
+    let createdReply: Comment | null = null;
+
     const addReply = (comments: Comment[]): Comment[] =>
       comments.map(comment => {
         if (comment.id === commentId) {
@@ -702,6 +863,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
               avatar_url: user.user_metadata?.avatar_url,
             },
           };
+
+          createdReply = reply;
 
           return {
             ...comment,
@@ -731,9 +894,18 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
           : post,
       ),
     }));
+
+    if (createdReply) {
+      fireAndForget(`/forum/posts/${postId}/comments/${commentId}/replies`, {
+        method: 'POST',
+        body: JSON.stringify(createdReply),
+      });
+    }
   };
 
   const toggleCommentLike = (postId: string, commentId: string, userId: string) => {
+    let shouldSync = false;
+
     const toggle = (comments: Comment[]): Comment[] =>
       comments.map(comment => {
         if (comment.id === commentId) {
@@ -741,6 +913,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
           const liked_by = hasLiked
             ? comment.liked_by?.filter(id => id !== userId) || []
             : [...(comment.liked_by || []), userId];
+
+          shouldSync = true;
 
           return {
             ...comment,
@@ -770,6 +944,13 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
           : post,
       ),
     }));
+
+    if (shouldSync) {
+      fireAndForget(`/forum/posts/${postId}/comments/${commentId}/likes`, {
+        method: 'POST',
+        body: JSON.stringify({ userId }),
+      });
+    }
   };
 
   const getCommentCount = (postId: string) => {
