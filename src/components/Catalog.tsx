@@ -1,113 +1,30 @@
 import React, { useState, useEffect } from 'react';
-import { Filter, Grid, List } from 'lucide-react';
+import { Filter, Grid, List, Plus } from 'lucide-react';
 import MediaCard from './MediaCard';
 import MediaModal from './MediaModal';
+import MediaFormModal from './MediaFormModal';
 import { MediaItem } from '../types';
+import { useData } from '../context/DataContext';
+import { useAuth } from '../hooks/useAuth';
 
 interface CatalogProps {
   searchQuery: string;
 }
 
 const Catalog: React.FC<CatalogProps> = ({ searchQuery }) => {
-  const [media, setMedia] = useState<MediaItem[]>([]);
   const [filteredMedia, setFilteredMedia] = useState<MediaItem[]>([]);
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<string>('rating');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [showAddModal, setShowAddModal] = useState(false);
 
-  // Sample data - In a real app, this would come from your database
-  useEffect(() => {
-    const sampleMedia: MediaItem[] = [
-      {
-        id: '1',
-        title: 'Attack on Titan',
-        type: 'anime',
-        description: 'Una serie épica sobre la humanidad luchando contra gigantes.',
-        image_url: 'https://images.pexels.com/photos/1170986/pexels-photo-1170986.jpeg',
-        release_date: '2013-04-07',
-        rating: 4.8,
-        rating_count: 15420,
-        genre: ['Acción', 'Drama', 'Fantasía'],
-        status: 'completed',
-        episodes: 87,
-        created_at: '2023-01-01'
-      },
-      {
-        id: '2',
-        title: 'The Matrix',
-        type: 'movie',
-        description: 'Un programador descubre la verdad sobre la realidad.',
-        image_url: 'https://images.pexels.com/photos/7991579/pexels-photo-7991579.jpeg',
-        release_date: '1999-03-31',
-        rating: 4.6,
-        rating_count: 8930,
-        genre: ['Ciencia Ficción', 'Acción'],
-        status: 'completed',
-        created_at: '2023-01-01'
-      },
-      {
-        id: '3',
-        title: 'Breaking Bad',
-        type: 'series',
-        description: 'Un profesor de química se convierte en fabricante de metanfetaminas.',
-        image_url: 'https://images.pexels.com/photos/3137068/pexels-photo-3137068.jpeg',
-        release_date: '2008-01-20',
-        rating: 4.9,
-        rating_count: 12750,
-        genre: ['Drama', 'Thriller'],
-        status: 'completed',
-        episodes: 62,
-        created_at: '2023-01-01'
-      },
-      {
-        id: '4',
-        title: 'One Piece',
-        type: 'manga',
-        description: 'Las aventuras de Monkey D. Luffy en busca del tesoro One Piece.',
-        image_url: 'https://images.pexels.com/photos/2387793/pexels-photo-2387793.jpeg',
-        release_date: '1997-07-22',
-        rating: 4.7,
-        rating_count: 18600,
-        genre: ['Aventura', 'Comedia', 'Shonen'],
-        status: 'ongoing',
-        chapters: 1000,
-        created_at: '2023-01-01'
-      },
-      {
-        id: '5',
-        title: 'Interstellar',
-        type: 'movie',
-        description: 'Una misión espacial para salvar a la humanidad.',
-        image_url: 'https://images.pexels.com/photos/73873/star-clusters-rosette-nebula-star-galaxies-73873.jpeg',
-        release_date: '2014-11-07',
-        rating: 4.5,
-        rating_count: 9840,
-        genre: ['Ciencia Ficción', 'Drama'],
-        status: 'completed',
-        created_at: '2023-01-01'
-      },
-      {
-        id: '6',
-        title: 'Demon Slayer',
-        type: 'anime',
-        description: 'Tanjiro busca una cura para su hermana convertida en demonio.',
-        image_url: 'https://images.pexels.com/photos/3137068/pexels-photo-3137068.jpeg',
-        release_date: '2019-04-06',
-        rating: 4.4,
-        rating_count: 11200,
-        genre: ['Acción', 'Sobrenatural'],
-        status: 'ongoing',
-        episodes: 44,
-        created_at: '2023-01-01'
-      }
-    ];
-    setMedia(sampleMedia);
-  }, []);
+  const { user } = useAuth();
+  const { mediaItems, addMediaItem } = useData();
 
   // Filter and search logic
   useEffect(() => {
-    let filtered = media;
+    let filtered = [...mediaItems];
 
     // Filter by type
     if (typeFilter !== 'all') {
@@ -119,7 +36,11 @@ const Catalog: React.FC<CatalogProps> = ({ searchQuery }) => {
       filtered = filtered.filter(item =>
         item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         item.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.genre.some(g => g.toLowerCase().includes(searchQuery.toLowerCase()))
+        item.genre.some(g => g.toLowerCase().includes(searchQuery.toLowerCase())) ||
+        item.cast?.some(castMember =>
+          castMember.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          castMember.character?.toLowerCase().includes(searchQuery.toLowerCase())
+        )
       );
     }
 
@@ -138,7 +59,11 @@ const Catalog: React.FC<CatalogProps> = ({ searchQuery }) => {
     });
 
     setFilteredMedia(filtered);
-  }, [media, typeFilter, searchQuery, sortBy]);
+  }, [mediaItems, typeFilter, searchQuery, sortBy]);
+
+  const handleAddMedia = (input: Parameters<typeof addMediaItem>[0]) => {
+    addMediaItem(input);
+  };
 
   const typeOptions = [
     { value: 'all', label: 'Todos' },
@@ -210,6 +135,16 @@ const Catalog: React.FC<CatalogProps> = ({ searchQuery }) => {
             <List size={20} />
           </button>
         </div>
+
+        {user && (
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            <Plus size={18} className="mr-2" />
+            Agregar contenido
+          </button>
+        )}
       </div>
 
       {/* Results Info */}
@@ -257,6 +192,12 @@ const Catalog: React.FC<CatalogProps> = ({ searchQuery }) => {
           onClose={() => setSelectedMedia(null)}
         />
       )}
+
+      <MediaFormModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onSubmit={handleAddMedia}
+      />
     </div>
   );
 };

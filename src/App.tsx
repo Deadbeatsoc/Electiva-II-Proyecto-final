@@ -5,6 +5,7 @@ import Home from './components/Home';
 import Catalog from './components/Catalog';
 import Forum from './components/Forum';
 import Profile from './components/Profile';
+import { DataProvider } from './context/DataContext';
 
 function App() {
   const { user, loading } = useAuth();
@@ -46,14 +47,16 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Navbar 
-        currentPage={currentPage}
-        onPageChange={handlePageChange}
-        onSearch={handleSearch}
-      />
-      {renderPage()}
-    </div>
+    <DataProvider>
+      <div className="min-h-screen bg-gray-50">
+        <Navbar
+          currentPage={currentPage}
+          onPageChange={handlePageChange}
+          onSearch={handleSearch}
+        />
+        {renderPage()}
+      </div>
+    </DataProvider>
   );
 }
 
