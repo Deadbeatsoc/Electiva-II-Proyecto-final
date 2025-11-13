@@ -38,10 +38,7 @@ const Profile: React.FC = () => {
     { value: 'progress', label: 'Progreso' },
   ];
 
-  const userList = useMemo(() => {
-    if (!user) return [];
-    return getUserList(user.id);
-  }, [user, getUserList]);
+  const userList = user ? getUserList(user.id) : [];
 
   const profileSettings = user ? getUserProfileSettings(user.id) : undefined;
 

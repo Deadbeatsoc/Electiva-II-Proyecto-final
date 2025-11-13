@@ -47,7 +47,7 @@ function App() {
   };
 
   return (
-    <DataProvider>
+    <DataProvider currentUserId={user?.id}>
       <div className="min-h-screen bg-gray-50">
         <Navbar
           currentPage={currentPage}

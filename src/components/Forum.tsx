@@ -97,6 +97,7 @@ const Forum: React.FC = () => {
   const handleSubmitPost = (input: { title: string; content: string; category: ForumPost['category']; media_id?: string; tags?: string[] }) => {
     if (!user) return;
     createForumPost(user, input);
+    setShowCreateModal(false);
   };
 
   const resolveMediaTitle = (mediaId?: string) => {

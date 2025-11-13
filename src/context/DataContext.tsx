@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Comment, ForumPost, MediaItem, Rating, User, UserMediaList } from '../types';
 
 interface CastMember {
@@ -285,36 +285,150 @@ const initialData: DataState = {
   profiles: {},
 };
 
-const loadState = (): DataState => {
+interface PersistedStore {
+  mediaItems: MediaItem[];
+  forumPosts: ForumPost[];
+  users: Record<
+    string,
+    {
+      userLists: UserMediaList[];
+      ratings: Rating[];
+      profile?: UserProfileSettings;
+    }
+  >;
+}
+
+const loadPersistedStore = (): PersistedStore => {
   if (typeof window === 'undefined') {
-    return initialData;
+    return {
+      mediaItems: initialData.mediaItems,
+      forumPosts: initialData.forumPosts,
+      users: {},
+    };
   }
 
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as DataState;
+    if (!raw) {
       return {
-        ...parsed,
-        mediaItems: parsed.mediaItems || initialData.mediaItems,
-        forumPosts: parsed.forumPosts || initialData.forumPosts,
+        mediaItems: initialData.mediaItems,
+        forumPosts: initialData.forumPosts,
+        users: {},
       };
     }
+
+    const parsed = JSON.parse(raw) as any;
+
+    // Support legacy shape saved before user-specific buckets
+    if (parsed.userLists || parsed.ratings || parsed.profiles) {
+      const users: PersistedStore['users'] = {};
+      const legacyUserLists: Record<string, UserMediaList[]> = parsed.userLists || {};
+      const legacyRatings: Rating[] = parsed.ratings || [];
+      const legacyProfiles: Record<string, UserProfileSettings> = parsed.profiles || {};
+
+      Object.keys(legacyUserLists).forEach(userId => {
+        users[userId] = {
+          userLists: legacyUserLists[userId] || [],
+          ratings: legacyRatings.filter(rating => rating.user_id === userId),
+          profile: legacyProfiles[userId],
+        };
+      });
+
+      return {
+        mediaItems: parsed.mediaItems || initialData.mediaItems,
+        forumPosts: parsed.forumPosts || initialData.forumPosts,
+        users,
+      };
+    }
+
+    return {
+      mediaItems: parsed.mediaItems || initialData.mediaItems,
+      forumPosts: parsed.forumPosts || initialData.forumPosts,
+      users: parsed.users || {},
+    };
   } catch (error) {
     console.error('Error loading data from localStorage', error);
+    return {
+      mediaItems: initialData.mediaItems,
+      forumPosts: initialData.forumPosts,
+      users: {},
+    };
   }
-
-  return initialData;
 };
 
-export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [state, setState] = useState<DataState>(() => loadState());
+const persistState = (state: DataState, activeUserId: string | null) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const store = loadPersistedStore();
+
+  store.mediaItems = state.mediaItems;
+  store.forumPosts = state.forumPosts;
+
+  if (activeUserId) {
+    store.users[activeUserId] = {
+      userLists: state.userLists[activeUserId] || [],
+      ratings: state.ratings.filter(rating => rating.user_id === activeUserId),
+      profile: state.profiles[activeUserId],
+    };
+  }
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+};
+
+const loadState = (userId: string | null): DataState => {
+  const store = loadPersistedStore();
+  const userData = userId ? store.users[userId] : undefined;
+  const allRatings = Object.values(store.users).flatMap(user => user.ratings || []);
+
+  return {
+    mediaItems: store.mediaItems?.length ? store.mediaItems : initialData.mediaItems,
+    forumPosts: store.forumPosts?.length ? store.forumPosts : initialData.forumPosts,
+    userLists: userId
+      ? {
+          ...(userData?.userLists ? { [userId]: userData.userLists } : { [userId]: [] }),
+        }
+      : {},
+    ratings: allRatings,
+    profiles: userId && userData?.profile ? { [userId]: userData.profile } : {},
+  };
+};
+
+export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string | null }> = ({
+  children,
+  currentUserId = null,
+}) => {
+  const [state, setState] = useState<DataState>(() => loadState(currentUserId ?? null));
+  const lastUserIdRef = useRef<string | null>(currentUserId ?? null);
+  const stateRef = useRef(state);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    }
+    stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    persistState(state, lastUserIdRef.current);
+  }, [state]);
+
+  useEffect(() => {
+    const nextUserId = currentUserId ?? null;
+    const previousUserId = lastUserIdRef.current;
+
+    if (previousUserId === nextUserId) {
+      return;
+    }
+
+    if (previousUserId) {
+      persistState(stateRef.current, previousUserId);
+    }
+
+    const nextState = loadState(nextUserId);
+
+    setState(nextState);
+
+    lastUserIdRef.current = nextUserId;
+  }, [currentUserId]);
 
   const addMediaItem = (input: MediaInput): MediaItem => {
     const newItem: MediaItem = {

@@ -76,6 +76,9 @@ const MediaModal: React.FC<MediaModalProps> = ({ media, onClose }) => {
       progress: 0,
       is_public: true,
     });
+    setListStatus('plan_to_watch');
+    setProgress(0);
+    setIsPublic(true);
   };
 
   const handleStatusChange = (status: UserMediaList['status']) => {
