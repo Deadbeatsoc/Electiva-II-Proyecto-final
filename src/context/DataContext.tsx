@@ -380,21 +380,21 @@ const loadPersistedStore = (): PersistedStore => {
 
       return {
         mediaItems: parsed.mediaItems || initialData.mediaItems,
-        forumPosts: parsed.forumPosts || initialData.forumPosts,
+        forumPosts: Array.isArray(parsed.forumPosts) ? parsed.forumPosts : [],
         users,
       };
     }
 
     return {
       mediaItems: parsed.mediaItems || initialData.mediaItems,
-      forumPosts: parsed.forumPosts || initialData.forumPosts,
+      forumPosts: Array.isArray(parsed.forumPosts) ? parsed.forumPosts : [],
       users: parsed.users || {},
     };
   } catch (error) {
     console.error('Error loading data from localStorage', error);
     return {
       mediaItems: initialData.mediaItems,
-      forumPosts: initialData.forumPosts,
+      forumPosts: [],
       users: {},
     };
   }
@@ -428,7 +428,7 @@ const loadState = (userId: string | null): DataState => {
 
   return {
     mediaItems: store.mediaItems?.length ? store.mediaItems : initialData.mediaItems,
-    forumPosts: store.forumPosts?.length ? store.forumPosts : initialData.forumPosts,
+    forumPosts: Array.isArray(store.forumPosts) ? store.forumPosts : [],
     userLists: userId
       ? {
           ...(userData?.userLists ? { [userId]: userData.userLists } : { [userId]: [] }),
@@ -456,12 +456,19 @@ export const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?:
 
     const loadForumPosts = async () => {
       const posts = await callApi<ForumPost[]>('/forum/posts', { method: 'GET' });
-      if (!ignore && posts) {
+      if (ignore) {
+        return;
+      }
+
+      if (Array.isArray(posts)) {
         setState(prev => ({
           ...prev,
-          forumPosts: posts.length ? posts : prev.forumPosts,
+          forumPosts: posts,
         }));
+        return;
       }
+
+      console.warn('Falling back to cached forum posts because the API response was invalid.');
     };
 
     loadForumPosts();
