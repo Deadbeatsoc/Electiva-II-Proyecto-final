@@ -103,7 +103,7 @@ const ForumPostModal: React.FC<ForumPostModalProps> = ({ postId, onClose }) => {
                 value={replyContent}
                 onChange={(e) => setReplyContent(e.target.value)}
                 rows={3}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent overflow-y-auto"
                 placeholder="Escribe tu respuesta"
               />
               <div className="flex justify-end space-x-2 mt-2">
@@ -189,7 +189,7 @@ const ForumPostModal: React.FC<ForumPostModalProps> = ({ postId, onClose }) => {
                 value={commentContent}
                 onChange={(e) => setCommentContent(e.target.value)}
                 rows={4}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent overflow-y-auto"
                 placeholder="Comparte tu opinión o inicia una respuesta"
               />
               <div className="flex justify-end">
