@@ -56,7 +56,8 @@ const DataContext = createContext<DataContextValue | undefined>(undefined);
 const STORAGE_KEY = 'media-forum-data-v1';
 
 const API_BASE_URL = (() => {
-  const raw = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+  const raw =
+    import.meta.env.VITE_API_URL || 'https://inobservant-counteractively-morgan.ngrok-free.dev/';
   return raw.endsWith('/') ? raw.slice(0, -1) : raw;
 })();
 
