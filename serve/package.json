@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
