@@ -96,7 +96,13 @@ const Profile: React.FC = () => {
   };
 
   const handleShare = () => {
-    const shareUrl = `${window.location.origin}/user/${user?.id}/list`;
+    if (!user) return;
+    const slug = profileSettings?.share_slug;
+    if (!slug) {
+      alert('Estamos generando tu enlace público, intenta nuevamente en unos segundos.');
+      return;
+    }
+    const shareUrl = `${window.location.origin}/share/${slug}`;
     navigator.clipboard.writeText(shareUrl);
     alert('¡Enlace copiado al portapapeles!');
   };
