@@ -2,13 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Loader2, Share2, Star } from 'lucide-react';
 import { UserMediaList } from '../types';
 import { UserProfileSettings } from '../context/DataContext';
+import { supabase } from '../lib/supabase';
 
 interface PublicProfileEntry {
   entry: UserMediaList;
   media: {
     id: string;
     title: string;
-    image_url?: string;
+    image_url?: string | null;
     type: string;
     rating: number;
     rating_count: number;
@@ -20,10 +21,59 @@ interface PublicProfileResponse {
   entries: PublicProfileEntry[];
 }
 
-const API_BASE_URL = (() => {
-  const raw = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
-  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
-})();
+interface ProfileRow {
+  user_id: string;
+  username: string | null;
+  bio: string | null;
+  avatar_url: string | null;
+  banner_color: string | null;
+  share_slug: string | null;
+  updated_at: string | null;
+}
+
+interface UserListRow {
+  id: string;
+  user_id: string;
+  media_id: string;
+  status: UserMediaList['status'];
+  rating: number | null;
+  progress: number | null;
+  is_public: boolean | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MediaSummaryRow {
+  id: string;
+  title: string;
+  image_url: string | null;
+  type: string;
+  rating: number | null;
+  rating_count: number | null;
+}
+
+const mapProfileRow = (row: ProfileRow): UserProfileSettings => ({
+  username: row.username ?? undefined,
+  bio: row.bio ?? undefined,
+  avatar_url: row.avatar_url ?? undefined,
+  banner_color: row.banner_color ?? undefined,
+  share_slug: row.share_slug ?? undefined,
+  updated_at: row.updated_at ?? undefined,
+});
+
+const mapListRow = (row: UserListRow): UserMediaList => ({
+  id: row.id,
+  user_id: row.user_id,
+  media_id: row.media_id,
+  status: row.status,
+  rating: row.rating ?? undefined,
+  progress: row.progress ?? 0,
+  is_public: row.is_public ?? true,
+  notes: row.notes ?? undefined,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
+});
 
 interface PublicProfilePageProps {
   slug: string;
@@ -38,21 +88,70 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
 
     const loadProfile = async () => {
       setStatus('loading');
-      try {
-        const response = await fetch(`${API_BASE_URL}/public-profiles/${encodeURIComponent(slug)}`);
-        if (!response.ok) {
-          throw new Error('Perfil no encontrado');
-        }
-        const payload = (await response.json()) as PublicProfileResponse;
-        if (!ignore) {
-          setData(payload);
-          setStatus('ready');
-        }
-      } catch (error) {
-        console.error(error);
+
+      const { data: profileRow, error: profileError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('share_slug', slug)
+        .maybeSingle();
+
+      if (profileError || !profileRow) {
         if (!ignore) {
           setStatus('error');
         }
+        return;
+      }
+
+      const profileSettings = mapProfileRow(profileRow as ProfileRow);
+      const userId = (profileRow as ProfileRow).user_id;
+
+      const { data: entriesRows, error: entriesError } = await supabase
+        .from('user_lists')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_public', true)
+        .order('created_at', { ascending: false });
+
+      if (entriesError) {
+        if (!ignore) {
+          setStatus('error');
+        }
+        return;
+      }
+
+      const normalizedEntries = (entriesRows as UserListRow[] | null)?.map(mapListRow) || [];
+      const mediaIds = Array.from(new Set(normalizedEntries.map(entry => entry.media_id)));
+
+      const { data: mediaRows } = mediaIds.length
+        ? await supabase
+            .from('media_items')
+            .select('id,title,image_url,type,rating,rating_count')
+            .in('id', mediaIds)
+        : { data: [] };
+
+      const mediaMap = new Map<string, MediaSummaryRow>();
+      (mediaRows as MediaSummaryRow[] | null)?.forEach(row => {
+        mediaMap.set(row.id, row);
+      });
+
+      if (!ignore) {
+        setData({
+          profile: { ...profileSettings, user_id: userId },
+          entries: normalizedEntries.map(entry => ({
+            entry,
+            media:
+              mediaMap.get(entry.media_id) ||
+              {
+                id: entry.media_id,
+                title: 'Contenido del catálogo',
+                image_url: null,
+                type: 'media',
+                rating: 0,
+                rating_count: 0,
+              },
+          })),
+        });
+        setStatus('ready');
       }
     };
 
@@ -146,8 +245,8 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
                     </div>
                     <div className="flex items-center text-yellow-500">
                       <Star size={18} className="mr-1" />
-                      <span className="font-semibold">{media.rating.toFixed(1)}</span>
-                      <span className="text-gray-500 text-sm ml-1">({media.rating_count})</span>
+                      <span className="font-semibold">{(media.rating || 0).toFixed(1)}</span>
+                      <span className="text-gray-500 text-sm ml-1">({media.rating_count || 0})</span>
                     </div>
                   </div>
                   <div className="mt-4 flex flex-wrap gap-2 text-sm text-gray-600">
