@@ -465,10 +465,15 @@ app.put(`${API_PREFIX}/users/:userId/profile`, (req, res) => {
   }
 
   execute(
-    'INSERT INTO profiles (user_id, username, bio, avatar_url, banner_color, share_slug, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, bio=excluded.bio, avatar_url=excluded.avatar_url, banner_color=excluded.banner_color, share_slug=excluded.share_slug, updated_at=CURRENT_TIMESTAMP;',
-    [userId, username, bio, avatar_url, banner_color, shareSlug]
-  );
+  `INSERT INTO profiles (user_id, username, bio, avatar_url, banner_color, share_slug, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+   ON CONFLICT(user_id)
+   DO UPDATE SET username=excluded.username, bio=excluded.bio, avatar_url=excluded.avatar_url,
+   banner_color=excluded.banner_color, share_slug=excluded.share_slug,
+   updated_at=CURRENT_TIMESTAMP;`,
+  [userId, username, bio, avatar_url, banner_color, shareSlug]
+);
+
 
   const saved = queryOne('SELECT * FROM profiles WHERE user_id = ?;', [userId]);
   res.json(mapProfile(saved));
