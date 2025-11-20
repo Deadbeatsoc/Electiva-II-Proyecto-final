@@ -7,7 +7,25 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const API_PREFIX = '/api';
 
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGIN || '*')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const corsOptions = allowedOrigins.includes('*')
+  ? { origin: true, credentials: true }
+  : {
+      origin(origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, origin);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+      credentials: true,
+    };
+
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 
 const parseJson = (value, fallback) => {

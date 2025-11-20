@@ -8,7 +8,8 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "migrate": "node scripts/migrate.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "pm2": "pm2 start ecosystem.config.cjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

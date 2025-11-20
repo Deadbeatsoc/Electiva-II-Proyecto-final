@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Loader2, Share2, Star } from 'lucide-react';
-import { UserMediaList } from '../types';
-import { UserProfileSettings } from '../context/DataContext';
-import { supabase } from '../lib/supabase';
+import { api } from '../lib/api';
+import type { UserMediaList } from '../types';
+import type { UserProfileSettings } from '../context/DataContext';
 
 interface PublicProfileEntry {
   entry: UserMediaList;
@@ -17,63 +17,9 @@ interface PublicProfileEntry {
 }
 
 interface PublicProfileResponse {
-  profile: UserProfileSettings & { user_id: string };
+  profile: (UserProfileSettings & { user_id: string }) | null;
   entries: PublicProfileEntry[];
 }
-
-interface ProfileRow {
-  user_id: string;
-  username: string | null;
-  bio: string | null;
-  avatar_url: string | null;
-  banner_color: string | null;
-  share_slug: string | null;
-  updated_at: string | null;
-}
-
-interface UserListRow {
-  id: string;
-  user_id: string;
-  media_id: string;
-  status: UserMediaList['status'];
-  rating: number | null;
-  progress: number | null;
-  is_public: boolean | null;
-  notes: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-interface MediaSummaryRow {
-  id: string;
-  title: string;
-  image_url: string | null;
-  type: string;
-  rating: number | null;
-  rating_count: number | null;
-}
-
-const mapProfileRow = (row: ProfileRow): UserProfileSettings => ({
-  username: row.username ?? undefined,
-  bio: row.bio ?? undefined,
-  avatar_url: row.avatar_url ?? undefined,
-  banner_color: row.banner_color ?? undefined,
-  share_slug: row.share_slug ?? undefined,
-  updated_at: row.updated_at ?? undefined,
-});
-
-const mapListRow = (row: UserListRow): UserMediaList => ({
-  id: row.id,
-  user_id: row.user_id,
-  media_id: row.media_id,
-  status: row.status,
-  rating: row.rating ?? undefined,
-  progress: row.progress ?? 0,
-  is_public: row.is_public ?? true,
-  notes: row.notes ?? undefined,
-  created_at: row.created_at,
-  updated_at: row.updated_at,
-});
 
 interface PublicProfilePageProps {
   slug: string;
@@ -84,88 +30,38 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
   const [data, setData] = useState<PublicProfileResponse | null>(null);
 
   useEffect(() => {
-    let ignore = false;
+    let cancelled = false;
 
     const loadProfile = async () => {
       setStatus('loading');
-
-      const { data: profileRow, error: profileError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('share_slug', slug)
-        .maybeSingle();
-
-      if (profileError || !profileRow) {
-        if (!ignore) {
+      try {
+        const response = await api.get<PublicProfileResponse>(`/public-profiles/${encodeURIComponent(slug)}`);
+        if (cancelled) return;
+        if (!response.profile) {
           setStatus('error');
+          return;
         }
-        return;
-      }
-
-      const profileSettings = mapProfileRow(profileRow as ProfileRow);
-      const userId = (profileRow as ProfileRow).user_id;
-
-      const { data: entriesRows, error: entriesError } = await supabase
-        .from('user_lists')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('is_public', true)
-        .order('created_at', { ascending: false });
-
-      if (entriesError) {
-        if (!ignore) {
-          setStatus('error');
-        }
-        return;
-      }
-
-      const normalizedEntries = (entriesRows as UserListRow[] | null)?.map(mapListRow) || [];
-      const mediaIds = Array.from(new Set(normalizedEntries.map(entry => entry.media_id)));
-
-      const { data: mediaRows } = mediaIds.length
-        ? await supabase
-            .from('media_items')
-            .select('id,title,image_url,type,rating,rating_count')
-            .in('id', mediaIds)
-        : { data: [] };
-
-      const mediaMap = new Map<string, MediaSummaryRow>();
-      (mediaRows as MediaSummaryRow[] | null)?.forEach(row => {
-        mediaMap.set(row.id, row);
-      });
-
-      if (!ignore) {
-        setData({
-          profile: { ...profileSettings, user_id: userId },
-          entries: normalizedEntries.map(entry => ({
-            entry,
-            media:
-              mediaMap.get(entry.media_id) ||
-              {
-                id: entry.media_id,
-                title: 'Contenido del catálogo',
-                image_url: null,
-                type: 'media',
-                rating: 0,
-                rating_count: 0,
-              },
-          })),
-        });
+        setData(response);
         setStatus('ready');
+      } catch (error) {
+        console.error('No se pudo cargar el perfil público', error);
+        if (!cancelled) {
+          setStatus('error');
+        }
       }
     };
 
-    loadProfile();
+    void loadProfile();
 
     return () => {
-      ignore = true;
+      cancelled = true;
     };
   }, [slug]);
 
   const handleCopy = () => {
     if (!data?.profile?.share_slug) return;
     const shareUrl = `${window.location.origin}/share/${data.profile.share_slug}`;
-    navigator.clipboard.writeText(shareUrl);
+    void navigator.clipboard.writeText(shareUrl);
     alert('¡Enlace copiado al portapapeles!');
   };
 
@@ -194,7 +90,7 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
       );
     }
 
-    const displayName = data.profile.username || 'Usuario de la comunidad';
+    const displayName = data.profile?.username || 'Usuario de la comunidad';
 
     return (
       <>
@@ -202,8 +98,10 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold mb-2">{displayName}</h1>
-              {data.profile.bio && <p className="text-blue-100 max-w-2xl">{data.profile.bio}</p>}
-              <p className="mt-2 text-sm text-blue-100">Compartiendo su lista con el enlace: /share/{data.profile.share_slug}</p>
+              {data.profile?.bio && <p className="text-blue-100 max-w-2xl">{data.profile.bio}</p>}
+              <p className="mt-2 text-sm text-blue-100">
+                Compartiendo su lista con el enlace: /share/{data.profile?.share_slug}
+              </p>
             </div>
             <div className="flex space-x-3 mt-6 md:mt-0">
               <button
@@ -256,9 +154,7 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
                       Valoración del usuario: {entry.rating ?? 0}
                     </span>
                   </div>
-                  {entry.notes && (
-                    <p className="mt-4 text-gray-700">{entry.notes}</p>
-                  )}
+                  {entry.notes && <p className="mt-4 text-gray-700">{entry.notes}</p>}
                 </div>
               </div>
             ))}
@@ -270,9 +166,7 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
 
   return (
     <div className="min-h-screen bg-gray-50 px-4 py-10 sm:px-6 lg:px-8">
-      <div className="max-w-5xl mx-auto">
-        {renderContent()}
-      </div>
+      <div className="max-w-5xl mx-auto">{renderContent()}</div>
     </div>
   );
 };

@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 .env
 serve/db/data.sqlite
+.vercel
