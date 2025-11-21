@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Loader2, Share2, Star } from 'lucide-react';
-import { api } from '../lib/api';
-import type { UserMediaList } from '../types';
+import { supabase } from '../lib/supabase';
+import type { MediaItem, UserMediaList } from '../types';
 import type { UserProfileSettings } from '../context/DataContext';
 
 interface PublicProfileEntry {
@@ -35,13 +35,64 @@ const PublicProfilePage: React.FC<PublicProfilePageProps> = ({ slug }) => {
     const loadProfile = async () => {
       setStatus('loading');
       try {
-        const response = await api.get<PublicProfileResponse>(`/public-profiles/${encodeURIComponent(slug)}`);
-        if (cancelled) return;
-        if (!response.profile) {
-          setStatus('error');
-          return;
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('share_slug', slug)
+          .maybeSingle();
+
+        if (profileError || !profile) {
+          throw profileError || new Error('Perfil no encontrado');
         }
-        setData(response);
+
+        const { data: entriesData, error: entriesError } = await supabase
+          .from('user_lists')
+          .select('*, media:media_items(*)')
+          .eq('user_id', profile.user_id)
+          .eq('is_public', true);
+
+        if (entriesError) {
+          throw entriesError;
+        }
+
+        if (cancelled) return;
+
+        const entries: PublicProfileEntry[] = (entriesData || []).flatMap(entryRow => {
+          const row = entryRow as UserMediaList & { media?: MediaItem | null };
+          const media = row.media;
+          if (!media) {
+            return [];
+          }
+
+          const entry: UserMediaList = {
+            id: row.id,
+            user_id: row.user_id,
+            media_id: row.media_id,
+            status: row.status,
+            rating: row.rating ?? undefined,
+            progress: row.progress ?? 0,
+            is_public: row.is_public ?? true,
+            notes: row.notes ?? undefined,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          };
+
+          return [
+            {
+              entry,
+              media: {
+                id: media.id,
+                title: media.title,
+                image_url: media.image_url,
+                type: media.type,
+                rating: media.rating ?? 0,
+                rating_count: media.rating_count ?? 0,
+              },
+            },
+          ];
+        });
+
+        setData({ profile, entries });
         setStatus('ready');
       } catch (error) {
         console.error('No se pudo cargar el perfil público', error);

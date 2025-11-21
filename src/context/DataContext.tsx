@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
-import { api } from '../lib/api';
-import type { Comment, ForumPost, MediaItem, User as AppUser, UserMediaList } from '../types';
+import { supabase } from '../lib/supabase';
+import { Comment, ForumPost, MediaItem, User as AppUser, UserMediaList } from '../types';
 
 interface CastMember {
   name: string;
@@ -54,7 +54,7 @@ interface DataContextValue {
   toggleCommentLike: (postId: string, commentId: string, userId: string) => void;
   getCommentCount: (postId: string) => number;
   getUserProfileSettings: (userId: string) => UserProfileSettings | undefined;
-  updateUserProfileSettings: (userId: string, updates: UserProfileSettings) => Promise<void>;
+  updateUserProfileSettings: (userId: string, updates: UserProfileSettings) => void;
 }
 
 const DataContext = createContext<DataContextValue | undefined>(undefined);
@@ -64,6 +64,21 @@ const generateId = () => {
     return crypto.randomUUID();
   }
   return Math.random().toString(36).slice(2, 11);
+};
+
+const parseArray = <T,>(value: unknown, fallback: T[] = []): T[] => {
+  if (Array.isArray(value)) {
+    return value as T[];
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
 };
 
 const flattenComments = (comments: Comment[]): Comment[] => {
@@ -76,108 +91,233 @@ const flattenComments = (comments: Comment[]): Comment[] => {
   }, []);
 };
 
-const collectProfilesFromPosts = (posts: ForumPost[]): Record<string, UserProfileSettings> => {
-  const profiles: Record<string, UserProfileSettings> = {};
+interface MediaRow {
+  id: string;
+  title: string;
+  type: string;
+  description: string;
+  image_url: string | null;
+  release_date: string | null;
+  rating: number | null;
+  rating_count: number | null;
+  genre: unknown;
+  status: string;
+  episodes: number | null;
+  chapters: number | null;
+  cast_info: unknown;
+  created_at: string;
+}
 
-  const visitComments = (comments?: Comment[]) => {
-    comments?.forEach(comment => {
-      if (comment.user) {
-        profiles[comment.user.id] = {
-          username: comment.user.username,
-          avatar_url: comment.user.avatar_url,
-          bio: comment.user.bio,
-          updated_at: comment.user.created_at,
-        };
-      }
-      if (comment.replies?.length) {
-        visitComments(comment.replies);
-      }
-    });
+interface ForumPostRow {
+  id: string;
+  user_id: string;
+  title: string;
+  content: string;
+  media_id: string | null;
+  category: ForumPost['category'];
+  tags: unknown;
+  liked_by: unknown;
+  created_at: string;
+  updated_at: string | null;
+}
+
+interface CommentRow {
+  id: string;
+  post_id: string;
+  user_id: string;
+  content: string;
+  likes_count: number | null;
+  liked_by: unknown;
+  parent_id: string | null;
+  created_at: string;
+}
+
+interface ProfileRow {
+  user_id: string;
+  username: string | null;
+  bio: string | null;
+  avatar_url: string | null;
+  banner_color: string | null;
+  share_slug: string | null;
+  updated_at: string | null;
+}
+
+interface UserListRow {
+  id: string;
+  user_id: string;
+  media_id: string;
+  status: UserMediaList['status'];
+  rating: number | null;
+  progress: number | null;
+  is_public: boolean | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const mapMediaRow = (row: MediaRow): MediaItem => ({
+  id: row.id,
+  title: row.title,
+  type: row.type as MediaItem['type'],
+  description: row.description,
+  image_url: row.image_url || '',
+  release_date: row.release_date || new Date().toISOString(),
+  rating: row.rating ? Number(row.rating) : 0,
+  rating_count: row.rating_count ?? 0,
+  genre: parseArray<string>(row.genre, []),
+  status: row.status as MediaItem['status'],
+  episodes: row.episodes ?? undefined,
+  chapters: row.chapters ?? undefined,
+  cast: parseArray<CastMember>(row.cast_info, []),
+  created_at: row.created_at,
+});
+
+const mapProfileRow = (row: ProfileRow): UserProfileSettings => ({
+  username: row.username ?? undefined,
+  bio: row.bio ?? undefined,
+  avatar_url: row.avatar_url ?? undefined,
+  banner_color: row.banner_color ?? undefined,
+  share_slug: row.share_slug ?? undefined,
+  updated_at: row.updated_at ?? undefined,
+});
+
+const mapUserListRow = (row: UserListRow): UserMediaList => ({
+  id: row.id,
+  user_id: row.user_id,
+  media_id: row.media_id,
+  status: row.status,
+  rating: row.rating ?? undefined,
+  progress: row.progress ?? 0,
+  is_public: row.is_public ?? true,
+  notes: row.notes ?? undefined,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
+});
+
+const mapCommentRow = (row: CommentRow, profiles: Record<string, UserProfileSettings>): Comment => ({
+  id: row.id,
+  post_id: row.post_id,
+  user_id: row.user_id,
+  content: row.content,
+  likes_count: row.likes_count ?? 0,
+  liked_by: parseArray<string>(row.liked_by, []),
+  parent_id: row.parent_id ?? undefined,
+  created_at: row.created_at,
+  user: buildAppUser(row.user_id, profiles),
+  replies: [],
+});
+
+const buildAppUser = (userId: string, profiles: Record<string, UserProfileSettings>): AppUser | undefined => {
+  const profile = profiles[userId];
+  if (!profile) {
+    return undefined;
+  }
+  return {
+    id: userId,
+    email: '',
+    username: profile.username || 'Usuario',
+    avatar_url: profile.avatar_url,
+    bio: profile.bio,
+    created_at: profile.updated_at || new Date().toISOString(),
   };
+};
 
-  posts.forEach(post => {
-    if (post.user) {
-      profiles[post.user.id] = {
-        username: post.user.username,
-        avatar_url: post.user.avatar_url,
-        bio: post.user.bio,
-        updated_at: post.user.created_at,
-      };
-    }
-    visitComments(post.comments);
+const buildCommentTree = (rows: CommentRow[], profiles: Record<string, UserProfileSettings>): Comment[] => {
+  const map = new Map<string, Comment>();
+  const roots: Comment[] = [];
+
+  rows.forEach(row => {
+    const comment = mapCommentRow(row, profiles);
+    comment.replies = [];
+    map.set(comment.id, comment);
   });
 
-  return profiles;
+  rows.forEach(row => {
+    const comment = map.get(row.id);
+    if (!comment) return;
+
+    if (row.parent_id) {
+      const parent = map.get(row.parent_id);
+      if (parent) {
+        parent.replies = [...(parent.replies || []), comment];
+      }
+    } else {
+      roots.push(comment);
+    }
+  });
+
+  return roots;
 };
 
-const mergeProfiles = (
-  current: Record<string, UserProfileSettings>,
-  next: Record<string, UserProfileSettings>
-) => ({ ...current, ...next });
+const mapForumPostRow = (
+  row: ForumPostRow,
+  comments: CommentRow[],
+  profiles: Record<string, UserProfileSettings>
+): ForumPost => ({
+  id: row.id,
+  user_id: row.user_id,
+  title: row.title,
+  content: row.content,
+  media_id: row.media_id || undefined,
+  category: row.category,
+  tags: parseArray<string>(row.tags, []),
+  liked_by: parseArray<string>(row.liked_by, []),
+  comments: buildCommentTree(
+    comments.filter(comment => comment.post_id === row.id),
+    profiles
+  ),
+  created_at: row.created_at,
+  updated_at: row.updated_at || row.created_at,
+  user: buildAppUser(row.user_id, profiles),
+});
 
-const metadataValue = (metadata: Record<string, unknown> | null | undefined, key: string) => {
-  const value = metadata?.[key];
-  return typeof value === 'string' ? value : undefined;
-};
-
-const createSerializableUser = (
-  user: SupabaseUser,
-  profile?: UserProfileSettings
-): AppUser => {
-  const metadata = (user.user_metadata as Record<string, unknown> | null) || {};
-  const username = profile?.username || metadataValue(metadata, 'username') || user.email?.split('@')[0] || 'Usuario';
-  const avatar = profile?.avatar_url ?? metadataValue(metadata, 'avatar_url');
-
-  return {
-    id: user.id,
-    email: user.email || '',
-    username,
-    avatar_url: avatar,
-    bio: profile?.bio,
-    created_at: profile?.updated_at || new Date().toISOString(),
-  };
-};
-
-const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string | null }> = ({
-  children,
-  currentUserId = null,
-}) => {
+const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string | null }> = ({ children, currentUserId = null }) => {
   const [state, setState] = useState<DataState>({
     mediaItems: [],
     forumPosts: [],
-    userLists: {},
+    userLists: currentUserId ? { [currentUserId]: [] } : {},
     profiles: {},
   });
 
   useEffect(() => {
-    let cancelled = false;
+    let ignore = false;
 
     const loadBootstrapData = async () => {
-      try {
-        const [mediaItems, forumPosts] = await Promise.all([
-          api.get<MediaItem[]>('/media'),
-          api.get<ForumPost[]>(
-            '/forum/posts'
-          ),
-        ]);
+      const [{ data: mediaData }, { data: postData }, { data: commentData }, { data: profileData }] = await Promise.all([
+        supabase.from('media_items').select('*').order('created_at', { ascending: false }),
+        supabase.from('forum_posts').select('*').order('created_at', { ascending: false }),
+        supabase.from('comments').select('*').order('created_at', { ascending: true }),
+        supabase.from('profiles').select('*'),
+      ]);
 
-        if (cancelled) return;
+      if (ignore) return;
 
-        setState(prev => ({
-          ...prev,
-          mediaItems,
-          forumPosts,
-          profiles: mergeProfiles(prev.profiles, collectProfilesFromPosts(forumPosts)),
-        }));
-      } catch (error) {
-        console.error('No se pudo cargar la data inicial', error);
-      }
+      const profilesMap = (profileData || []).reduce<Record<string, UserProfileSettings>>((acc, profile) => {
+        acc[profile.user_id] = mapProfileRow(profile as ProfileRow);
+        return acc;
+      }, {});
+
+      setState(prev => ({
+        ...prev,
+        mediaItems: Array.isArray(mediaData) ? mediaData.map(row => mapMediaRow(row as MediaRow)) : prev.mediaItems,
+        forumPosts:
+          Array.isArray(postData) && Array.isArray(commentData)
+            ? postData.map(row =>
+                mapForumPostRow(
+                  row as ForumPostRow,
+                  commentData as CommentRow[],
+                  { ...prev.profiles, ...profilesMap }
+                )
+              )
+            : prev.forumPosts,
+        profiles: { ...prev.profiles, ...profilesMap },
+      }));
     };
 
-    void loadBootstrapData();
+    loadBootstrapData();
 
     return () => {
-      cancelled = true;
+      ignore = true;
     };
   }, []);
 
@@ -186,43 +326,124 @@ const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string
       return;
     }
 
-    let cancelled = false;
+    let ignore = false;
 
     const loadUserData = async () => {
-      try {
-        const [listEntries, profile] = await Promise.all([
-          api.get<UserMediaList[]>(`/users/${currentUserId}/list`),
-          api.get<UserProfileSettings | null>(`/users/${currentUserId}/profile`),
-        ]);
+      const [{ data: entries }, { data: profile }] = await Promise.all([
+        supabase.from('user_lists').select('*').eq('user_id', currentUserId),
+        supabase.from('profiles').select('*').eq('user_id', currentUserId).maybeSingle(),
+      ]);
 
-        let resolvedProfile = profile;
+      if (ignore) return;
 
-        if (!resolvedProfile) {
-          try {
-            resolvedProfile = await api.put<UserProfileSettings>(`/users/${currentUserId}/profile`, {});
-          } catch (profileError) {
-            console.error('No se pudo crear el perfil del usuario', profileError);
-          }
+      setState(prev => ({
+        ...prev,
+        userLists: {
+          ...prev.userLists,
+          [currentUserId]: Array.isArray(entries) ? (entries as UserListRow[]).map(mapUserListRow) : prev.userLists[currentUserId] || [],
+        },
+        profiles: profile
+          ? {
+              ...prev.profiles,
+              [currentUserId]: mapProfileRow(profile as ProfileRow),
+            }
+          : prev.profiles,
+      }));
+
+      if (!profile) {
+        const { data: createdProfile } = await supabase
+          .from('profiles')
+          .insert({ user_id: currentUserId })
+          .select('*')
+          .maybeSingle();
+
+        if (!ignore && createdProfile) {
+          setState(prev => ({
+            ...prev,
+            profiles: {
+              ...prev.profiles,
+              [currentUserId]: mapProfileRow(createdProfile as ProfileRow),
+            },
+          }));
         }
-
-        if (cancelled) return;
-
-        setState(prev => ({
-          ...prev,
-          userLists: { ...prev.userLists, [currentUserId]: listEntries },
-          profiles: resolvedProfile ? { ...prev.profiles, [currentUserId]: resolvedProfile } : prev.profiles,
-        }));
-      } catch (error) {
-        console.error('No se pudo cargar la información del usuario', error);
       }
     };
 
-    void loadUserData();
+    loadUserData();
 
     return () => {
-      cancelled = true;
+      ignore = true;
     };
   }, [currentUserId]);
+
+  const addMediaItem = (input: MediaInput): MediaItem => {
+    const newItem: MediaItem = {
+      ...input,
+      id: generateId(),
+      created_at: new Date().toISOString(),
+      rating: typeof input.rating === 'number' ? input.rating : 0,
+      rating_count: typeof input.rating_count === 'number' ? input.rating_count : 0,
+    };
+
+    setState(prev => ({
+      ...prev,
+      mediaItems: [newItem, ...prev.mediaItems],
+    }));
+
+    supabase
+      .from('media_items')
+      .insert({
+        id: newItem.id,
+        title: newItem.title,
+        type: newItem.type,
+        description: newItem.description,
+        image_url: newItem.image_url,
+        release_date: newItem.release_date,
+        rating: newItem.rating,
+        rating_count: newItem.rating_count,
+        genre: newItem.genre,
+        status: newItem.status,
+        episodes: newItem.episodes ?? null,
+        chapters: newItem.chapters ?? null,
+        cast_info: newItem.cast ?? [],
+      })
+      .select('*')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setState(prev => ({
+            ...prev,
+            mediaItems: [mapMediaRow(data as MediaRow), ...prev.mediaItems.filter(item => item.id !== newItem.id)],
+          }));
+        }
+      });
+
+    return newItem;
+  };
+
+  const updateMediaItem = (mediaId: string, updates: Partial<MediaItem>) => {
+    setState(prev => ({
+      ...prev,
+      mediaItems: prev.mediaItems.map(item => (item.id === mediaId ? { ...item, ...updates } : item)),
+    }));
+
+    const payload: Record<string, unknown> = {};
+    if (typeof updates.title !== 'undefined') payload.title = updates.title;
+    if (typeof updates.description !== 'undefined') payload.description = updates.description;
+    if (typeof updates.image_url !== 'undefined') payload.image_url = updates.image_url;
+    if (typeof updates.release_date !== 'undefined') payload.release_date = updates.release_date;
+    if (typeof updates.rating !== 'undefined') payload.rating = updates.rating;
+    if (typeof updates.rating_count !== 'undefined') payload.rating_count = updates.rating_count;
+    if (typeof updates.genre !== 'undefined') payload.genre = updates.genre;
+    if (typeof updates.status !== 'undefined') payload.status = updates.status;
+    if (typeof updates.episodes !== 'undefined') payload.episodes = updates.episodes;
+    if (typeof updates.chapters !== 'undefined') payload.chapters = updates.chapters;
+    if (typeof updates.cast !== 'undefined') payload.cast_info = updates.cast;
+
+    if (Object.keys(payload).length > 0) {
+      supabase.from('media_items').update(payload).eq('id', mediaId);
+    }
+  };
 
   const getUserList = (userId: string) => {
     const entries = state.userLists[userId] || [];
@@ -239,188 +460,155 @@ const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string
     return getUserList(userId).find(entry => entry.media_id === mediaId);
   };
 
-  const addMediaItem = (input: MediaInput): MediaItem => {
-    const id = generateId();
-    const optimistic: MediaItem = {
-      ...input,
-      id,
-      created_at: new Date().toISOString(),
-      rating: typeof input.rating === 'number' ? input.rating : 0,
-      rating_count: typeof input.rating_count === 'number' ? input.rating_count : 0,
-    };
+  const syncMediaRating = async (mediaId: string) => {
+    const { data } = await supabase.from('media_ratings').select('rating').eq('media_id', mediaId);
+    if (!data) return;
 
-    setState(prev => ({
-      ...prev,
-      mediaItems: [optimistic, ...prev.mediaItems],
-    }));
+    const ratings = data as { rating: number }[];
+    const rating_count = ratings.length;
+    const rating = rating_count ? ratings.reduce((sum, entry) => sum + entry.rating, 0) / rating_count : 0;
 
-    const payload = {
-      ...input,
-      id,
-      genre: input.genre ?? [],
-      cast: input.cast ?? [],
-    };
+    await supabase.from('media_items').update({ rating, rating_count }).eq('id', mediaId);
 
-    void api
-      .post<MediaItem>('/media', payload)
-      .then(saved => {
-        setState(prev => ({
-          ...prev,
-          mediaItems: [saved, ...prev.mediaItems.filter(item => item.id !== saved.id)],
-        }));
-      })
-      .catch(error => {
-        console.error('No se pudo guardar el contenido', error);
-        setState(prev => ({
-          ...prev,
-          mediaItems: prev.mediaItems.filter(item => item.id !== id),
-        }));
-      });
-
-    return optimistic;
-  };
-
-  const updateMediaItem = (mediaId: string, updates: Partial<MediaItem>) => {
-    setState(prev => ({
-      ...prev,
-      mediaItems: prev.mediaItems.map(item => (item.id === mediaId ? { ...item, ...updates } : item)),
-    }));
-
-    // No hay endpoint de actualización aún. Se deja registro para futuras mejoras.
-    console.warn('updateMediaItem aún no sincroniza con la API.');
-  };
-
-  const addUserMediaEntry = (userId: string, mediaId: string, data?: Partial<UserMediaList>) => {
-    const optimistic: UserMediaList = {
-      id: generateId(),
-      user_id: userId,
-      media_id: mediaId,
-      status: data?.status ?? 'plan_to_watch',
-      rating: data?.rating ?? undefined,
-      progress: data?.progress ?? 0,
-      is_public: data?.is_public ?? true,
-      notes: data?.notes,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
-    setState(prev => ({
-      ...prev,
-      userLists: {
-        ...prev.userLists,
-        [userId]: [...(prev.userLists[userId] || []), optimistic],
-      },
-    }));
-
-    void api
-      .post<UserMediaList>(`/users/${userId}/list`, {
-        id: optimistic.id,
-        media_id: mediaId,
-        status: optimistic.status,
-        rating: data?.rating ?? null,
-        progress: optimistic.progress,
-        is_public: optimistic.is_public,
-        notes: optimistic.notes ?? '',
-      })
-      .then(saved => {
-        setState(prev => ({
-          ...prev,
-          userLists: {
-            ...prev.userLists,
-            [userId]: (prev.userLists[userId] || []).map(entry => (entry.id === optimistic.id ? saved : entry)),
-          },
-        }));
-      })
-      .catch(error => {
-        console.error('No se pudo agregar a la lista', error);
-        setState(prev => ({
-          ...prev,
-          userLists: {
-            ...prev.userLists,
-            [userId]: (prev.userLists[userId] || []).filter(entry => entry.id !== optimistic.id),
-          },
-        }));
-      });
-  };
-
-  const updateUserMediaEntry = (userId: string, mediaId: string, updates: Partial<UserMediaList>) => {
-    setState(prev => ({
-      ...prev,
-      userLists: {
-        ...prev.userLists,
-        [userId]: (prev.userLists[userId] || []).map(entry =>
-          entry.media_id === mediaId
-            ? { ...entry, ...updates, updated_at: new Date().toISOString() }
-            : entry
-        ),
-      },
-    }));
-
-    void api
-      .put<UserMediaList>(`/users/${userId}/list/${mediaId}`, updates)
-      .catch(error => {
-        console.error('No se pudo actualizar la entrada', error);
-      });
-  };
-
-  const removeUserMediaEntry = (userId: string, mediaId: string) => {
-    const snapshot = state.userLists[userId] || [];
-    setState(prev => ({
-      ...prev,
-      userLists: {
-        ...prev.userLists,
-        [userId]: snapshot.filter(entry => entry.media_id !== mediaId),
-      },
-    }));
-
-    void api.delete(`/users/${userId}/list/${mediaId}`).catch(error => {
-      console.error('No se pudo eliminar la entrada', error);
-      setState(prev => ({
-        ...prev,
-        userLists: { ...prev.userLists, [userId]: snapshot },
-      }));
-    });
-  };
-
-  const syncRatingStats = (mediaId: string, rating: number, rating_count: number) => {
     setState(prev => ({
       ...prev,
       mediaItems: prev.mediaItems.map(item =>
-        item.id === mediaId ? { ...item, rating, rating_count } : item
+        item.id === mediaId
+          ? { ...item, rating, rating_count }
+          : item
       ),
     }));
   };
 
+  const addUserMediaEntry = (userId: string, mediaId: string, data?: Partial<UserMediaList>) => {
+    setState(prev => {
+      const existing = prev.userLists[userId] || [];
+      if (existing.some(entry => entry.media_id === mediaId)) {
+        return prev;
+      }
+
+      const newEntry: UserMediaList = {
+        id: generateId(),
+        user_id: userId,
+        media_id: mediaId,
+        status: data?.status ?? 'plan_to_watch',
+        rating: data?.rating ?? 0,
+        progress: data?.progress ?? 0,
+        is_public: data?.is_public ?? true,
+        notes: data?.notes,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      supabase.from('user_lists').insert({
+        id: newEntry.id,
+        user_id: newEntry.user_id,
+        media_id: newEntry.media_id,
+        status: newEntry.status,
+        rating: newEntry.rating,
+        progress: newEntry.progress,
+        is_public: newEntry.is_public,
+        notes: newEntry.notes ?? null,
+      });
+
+      return {
+        ...prev,
+        userLists: {
+          ...prev.userLists,
+          [userId]: [...existing, newEntry],
+        },
+      };
+    });
+  };
+
+  const updateUserMediaEntry = (userId: string, mediaId: string, updates: Partial<UserMediaList>) => {
+    setState(prev => {
+      const existing = prev.userLists[userId] || [];
+      const nextList = existing.map(entry => {
+        if (entry.media_id !== mediaId) {
+          return entry;
+        }
+        return {
+          ...entry,
+          ...updates,
+          updated_at: new Date().toISOString(),
+        };
+      });
+
+      return {
+        ...prev,
+        userLists: {
+          ...prev.userLists,
+          [userId]: nextList,
+        },
+      };
+    });
+
+    supabase
+      .from('user_lists')
+      .update({
+        status: updates.status,
+        rating: updates.rating,
+        progress: updates.progress,
+        is_public: updates.is_public,
+        notes: updates.notes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', userId)
+      .eq('media_id', mediaId);
+
+    if (typeof updates.rating === 'number') {
+      supabase
+        .from('media_ratings')
+        .upsert(
+          {
+            user_id: userId,
+            media_id: mediaId,
+            rating: updates.rating,
+          },
+          { onConflict: 'user_id,media_id' }
+        )
+        .then(() => {
+          void syncMediaRating(mediaId);
+        });
+    }
+  };
+
+  const removeUserMediaEntry = (userId: string, mediaId: string) => {
+    setState(prev => {
+      const existing = prev.userLists[userId] || [];
+      const nextList = existing.filter(entry => entry.media_id !== mediaId);
+
+      return {
+        ...prev,
+        userLists: {
+          ...prev.userLists,
+          [userId]: nextList,
+        },
+      };
+    });
+
+    supabase
+      .from('user_lists')
+      .delete()
+      .eq('user_id', userId)
+      .eq('media_id', mediaId);
+  };
+
   const setUserRatingForMedia = (userId: string, mediaId: string, rating: number) => {
     updateUserMediaEntry(userId, mediaId, { rating });
-
-    void api
-      .post<{ rating: number; rating_count: number }>(`/media/${mediaId}/ratings`, { userId, rating })
-      .then(stats => {
-        syncRatingStats(mediaId, stats.rating, stats.rating_count);
-      })
-      .catch(error => {
-        console.error('No se pudo registrar la calificación', error);
-      });
   };
 
   const getUserRatingForMedia = (userId: string, mediaId: string) => {
     return state.userLists[userId]?.find(entry => entry.media_id === mediaId)?.rating || 0;
   };
 
-  const refreshForumPosts = (postId: string, updater: (post: ForumPost) => ForumPost) => {
-    setState(prev => ({
-      ...prev,
-      forumPosts: prev.forumPosts.map(post => (post.id === postId ? updater(post) : post)),
-    }));
-  };
-
   const createForumPost = (
     user: SupabaseUser,
     input: { title: string; content: string; category: ForumPost['category']; media_id?: string; tags?: string[] }
   ): ForumPost => {
-    const author = createSerializableUser(user, state.profiles[user.id]);
-    const optimistic: ForumPost = {
+    const profileUser = buildAppUser(user.id, state.profiles);
+    const newPost: ForumPost = {
       id: generateId(),
       user_id: user.id,
       title: input.title,
@@ -432,46 +620,89 @@ const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string
       comments: [],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      user: author,
+      user: profileUser,
     };
 
     setState(prev => ({
       ...prev,
-      forumPosts: [optimistic, ...prev.forumPosts],
+      forumPosts: [newPost, ...prev.forumPosts],
     }));
 
-    void api
-      .post<ForumPost>('/forum/posts', { ...input, user: author, id: optimistic.id })
-      .then(saved => {
-        setState(prev => ({
-          ...prev,
-          forumPosts: prev.forumPosts.map(post => (post.id === optimistic.id ? saved : post)),
-          profiles: mergeProfiles(prev.profiles, collectProfilesFromPosts([saved])),
-        }));
+    supabase
+      .from('forum_posts')
+      .insert({
+        id: newPost.id,
+        user_id: newPost.user_id,
+        title: newPost.title,
+        content: newPost.content,
+        media_id: newPost.media_id ?? null,
+        category: newPost.category,
+        tags: newPost.tags,
+        liked_by: newPost.liked_by,
       })
-      .catch(error => {
-        console.error('No se pudo crear el post', error);
-        setState(prev => ({
-          ...prev,
-          forumPosts: prev.forumPosts.filter(post => post.id !== optimistic.id),
-        }));
+      .select('*')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setState(prev => ({
+            ...prev,
+            forumPosts: prev.forumPosts.map(post =>
+              post.id === newPost.id
+                ? mapForumPostRow(data as ForumPostRow, [], prev.profiles)
+                : post
+            ),
+          }));
+        }
       });
 
-    return optimistic;
+    return newPost;
   };
 
   const togglePostLike = (postId: string, userId: string) => {
-    void api
-      .post<{ liked_by: string[] }>(`/forum/posts/${postId}/likes`, { userId })
-      .then(result => {
-        refreshForumPosts(postId, post => ({ ...post, liked_by: result.liked_by }));
-      })
-      .catch(error => console.error('No se pudo actualizar el like', error));
+    setState(prev => ({
+      ...prev,
+      forumPosts: prev.forumPosts.map(post => {
+        if (post.id !== postId) {
+          return post;
+        }
+        const hasLiked = post.liked_by.includes(userId);
+        const liked_by = hasLiked ? post.liked_by.filter(id => id !== userId) : [...post.liked_by, userId];
+        return {
+          ...post,
+          liked_by,
+          updated_at: new Date().toISOString(),
+        };
+      }),
+    }));
+
+    const post = state.forumPosts.find(item => item.id === postId);
+    const likedBy = post ? [...post.liked_by] : [];
+    const hasLiked = likedBy.includes(userId);
+    const nextLikedBy = hasLiked ? likedBy.filter(id => id !== userId) : [...likedBy, userId];
+
+    supabase
+      .from('forum_posts')
+      .update({ liked_by: nextLikedBy })
+      .eq('id', postId)
+      .select('*')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setState(prev => ({
+            ...prev,
+            forumPosts: prev.forumPosts.map(item =>
+              item.id === postId
+                ? { ...item, liked_by: parseArray<string>((data as ForumPostRow).liked_by, []) }
+                : item
+            ),
+          }));
+        }
+      });
   };
 
   const addPostComment = (postId: string, user: SupabaseUser, content: string) => {
-    const author = createSerializableUser(user, state.profiles[user.id]);
-    const optimistic: Comment = {
+    const profileUser = buildAppUser(user.id, state.profiles);
+    const newComment: Comment = {
       id: generateId(),
       post_id: postId,
       user_id: user.id,
@@ -479,35 +710,58 @@ const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string
       likes_count: 0,
       liked_by: [],
       created_at: new Date().toISOString(),
-      user: author,
+      user: profileUser,
       replies: [],
     };
 
-    refreshForumPosts(postId, post => ({
-      ...post,
-      comments: [...post.comments, optimistic],
+    setState(prev => ({
+      ...prev,
+      forumPosts: prev.forumPosts.map(post =>
+        post.id === postId
+          ? {
+              ...post,
+              comments: [...post.comments, newComment],
+              updated_at: new Date().toISOString(),
+            }
+          : post
+      ),
     }));
 
-    void api
-      .post<Comment>(`/forum/posts/${postId}/comments`, { user: author, content, id: optimistic.id })
-      .then(saved => {
-        refreshForumPosts(postId, post => ({
-          ...post,
-          comments: post.comments.map(comment => (comment.id === optimistic.id ? saved : comment)),
-        }));
+    supabase
+      .from('comments')
+      .insert({
+        id: newComment.id,
+        post_id: newComment.post_id,
+        user_id: newComment.user_id,
+        content: newComment.content,
+        likes_count: 0,
+        liked_by: [],
       })
-      .catch(error => {
-        console.error('No se pudo crear el comentario', error);
-        refreshForumPosts(postId, post => ({
-          ...post,
-          comments: post.comments.filter(comment => comment.id !== optimistic.id),
-        }));
+      .select('*')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setState(prev => ({
+            ...prev,
+            forumPosts: prev.forumPosts.map(post =>
+              post.id === postId
+                ? {
+                    ...post,
+                    comments: post.comments.map(comment =>
+                      comment.id === newComment.id
+                        ? mapCommentRow(data as CommentRow, prev.profiles)
+                        : comment
+                    ),
+                  }
+                : post
+            ),
+          }));
+        }
       });
   };
 
   const addReplyToComment = (postId: string, commentId: string, user: SupabaseUser, content: string) => {
-    const author = createSerializableUser(user, state.profiles[user.id]);
-    const optimistic: Comment = {
+    const reply: Comment = {
       id: generateId(),
       post_id: postId,
       user_id: user.id,
@@ -515,75 +769,179 @@ const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string
       likes_count: 0,
       liked_by: [],
       created_at: new Date().toISOString(),
-      user: author,
+      user: buildAppUser(user.id, state.profiles),
       replies: [],
     };
 
     const insertReply = (comments: Comment[]): Comment[] =>
       comments.map(comment => {
         if (comment.id === commentId) {
-          return { ...comment, replies: [...(comment.replies || []), optimistic] };
+          return {
+            ...comment,
+            replies: [...(comment.replies || []), reply],
+          };
         }
         if (comment.replies?.length) {
-          return { ...comment, replies: insertReply(comment.replies) };
+          return {
+            ...comment,
+            replies: insertReply(comment.replies),
+          };
         }
         return comment;
       });
 
-    refreshForumPosts(postId, post => ({ ...post, comments: insertReply(post.comments) }));
+    setState(prev => ({
+      ...prev,
+      forumPosts: prev.forumPosts.map(post =>
+        post.id === postId
+          ? {
+              ...post,
+              comments: insertReply(post.comments),
+              updated_at: new Date().toISOString(),
+            }
+          : post
+      ),
+    }));
 
-    void api
-      .post<Comment>(`/forum/posts/${postId}/comments/${commentId}/replies`, {
-        user: author,
+    supabase
+      .from('comments')
+      .insert({
+        id: reply.id,
+        post_id: postId,
+        user_id: user.id,
         content,
-        id: optimistic.id,
+        parent_id: commentId,
+        likes_count: 0,
+        liked_by: [],
       })
-      .then(saved => {
-        const replaceReply = (comments: Comment[]): Comment[] =>
-          comments.map(comment => {
-            if (comment.id === commentId) {
-              return {
-                ...comment,
-                replies: (comment.replies || []).map(reply => (reply.id === optimistic.id ? saved : reply)),
-              };
+      .select('*')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!data) {
+          return;
+        }
+        setState(prev => ({
+          ...prev,
+          forumPosts: prev.forumPosts.map(post => {
+            if (post.id !== postId) {
+              return post;
             }
-            if (comment.replies?.length) {
-              return { ...comment, replies: replaceReply(comment.replies) };
-            }
-            return comment;
-          });
 
-        refreshForumPosts(postId, post => ({ ...post, comments: replaceReply(post.comments) }));
-      })
-      .catch(error => {
-        console.error('No se pudo responder el comentario', error);
-        const removeReply = (comments: Comment[]): Comment[] =>
-          comments.map(comment => ({
-            ...comment,
-            replies: comment.replies?.filter(reply => reply.id !== optimistic.id) || [],
-          }));
-        refreshForumPosts(postId, post => ({ ...post, comments: removeReply(post.comments) }));
+            const apply = (comments: Comment[]): Comment[] =>
+              comments.map(comment => {
+                if (comment.id === commentId) {
+                  return {
+                    ...comment,
+                    replies: [...(comment.replies || []), mapCommentRow(data as CommentRow, prev.profiles)],
+                  };
+                }
+                if (comment.replies?.length) {
+                  return {
+                    ...comment,
+                    replies: apply(comment.replies),
+                  };
+                }
+                return comment;
+              });
+
+            return {
+              ...post,
+              comments: apply(post.comments),
+            };
+          }),
+        }));
       });
   };
 
   const toggleCommentLike = (postId: string, commentId: string, userId: string) => {
-    void api
-      .post<{ liked_by: string[]; likes_count: number }>(`/forum/posts/${postId}/comments/${commentId}/likes`, { userId })
-      .then(result => {
-        const updateComments = (comments: Comment[]): Comment[] =>
-          comments.map(comment => {
-            if (comment.id === commentId) {
-              return { ...comment, liked_by: result.liked_by, likes_count: result.likes_count };
-            }
-            if (comment.replies?.length) {
-              return { ...comment, replies: updateComments(comment.replies) };
-            }
-            return comment;
-          });
+    const toggle = (comments: Comment[]): Comment[] =>
+      comments.map(comment => {
+        if (comment.id === commentId) {
+          const liked = comment.liked_by?.includes(userId);
+          const liked_by = liked
+            ? comment.liked_by?.filter(id => id !== userId) || []
+            : [...(comment.liked_by || []), userId];
+          return {
+            ...comment,
+            liked_by,
+            likes_count: liked_by.length,
+          };
+        }
+        if (comment.replies?.length) {
+          return {
+            ...comment,
+            replies: toggle(comment.replies),
+          };
+        }
+        return comment;
+      });
 
-        refreshForumPosts(postId, post => ({ ...post, comments: updateComments(post.comments) }));
-      })
-      .catch(error => console.error('No se pudo actualizar el like del comentario', error));
+    setState(prev => ({
+      ...prev,
+      forumPosts: prev.forumPosts.map(post =>
+        post.id === postId
+          ? {
+              ...post,
+              comments: toggle(post.comments),
+            }
+          : post
+      ),
+    }));
+
+    supabase
+      .from('comments')
+      .select('*')
+      .eq('id', commentId)
+      .maybeSingle()
+      .then(({ data }) => {
+        const comment = data as CommentRow | null;
+        const currentLikes = comment ? parseArray<string>(comment.liked_by, []) : [];
+        const hasLiked = currentLikes.includes(userId);
+        const nextLikes = hasLiked ? currentLikes.filter(id => id !== userId) : [...currentLikes, userId];
+
+        supabase
+          .from('comments')
+          .update({ liked_by: nextLikes, likes_count: nextLikes.length })
+          .eq('id', commentId)
+          .select('*')
+          .maybeSingle()
+          .then(({ data: updated }) => {
+            if (!updated) {
+              return;
+            }
+            setState(prev => ({
+              ...prev,
+              forumPosts: prev.forumPosts.map(post => {
+                if (post.id !== postId) {
+                  return post;
+                }
+
+                const apply = (comments: Comment[]): Comment[] =>
+                  comments.map(comment => {
+                    if (comment.id === commentId) {
+                      return {
+                        ...comment,
+                        liked_by: parseArray<string>((updated as CommentRow).liked_by, []),
+                        likes_count: (updated as CommentRow).likes_count ?? 0,
+                      };
+                    }
+                    if (comment.replies?.length) {
+                      return {
+                        ...comment,
+                        replies: apply(comment.replies),
+                      };
+                    }
+                    return comment;
+                  });
+
+                return {
+                  ...post,
+                  comments: apply(post.comments),
+                };
+              }),
+            }));
+          });
+      });
   };
 
   const getCommentCount = (postId: string) => {
@@ -594,7 +952,7 @@ const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string
 
   const getUserProfileSettings = (userId: string) => state.profiles[userId];
 
-  const updateUserProfileSettings = async (userId: string, updates: UserProfileSettings) => {
+  const updateUserProfileSettings = (userId: string, updates: UserProfileSettings) => {
     setState(prev => ({
       ...prev,
       profiles: {
@@ -606,15 +964,25 @@ const DataProvider: React.FC<{ children: React.ReactNode; currentUserId?: string
       },
     }));
 
-    try {
-      const saved = await api.put<UserProfileSettings>(`/users/${userId}/profile`, updates);
-      setState(prev => ({
-        ...prev,
-        profiles: { ...prev.profiles, [userId]: saved },
-      }));
-    } catch (error) {
-      console.error('No se pudo actualizar el perfil', error);
-    }
+    supabase
+      .from('profiles')
+      .upsert({
+        user_id: userId,
+        ...updates,
+      })
+      .select('*')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setState(prev => ({
+            ...prev,
+            profiles: {
+              ...prev.profiles,
+              [userId]: mapProfileRow(data as ProfileRow),
+            },
+          }));
+        }
+      });
   };
 
   const value = useMemo<DataContextValue>(() => ({
